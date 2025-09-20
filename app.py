@@ -1,11 +1,10 @@
-# app.py
 import streamlit as st
 import pdfplumber
 import pandas as pd
 import spacy
 from nltk.corpus import stopwords
+import re
 
-# Load NLP model
 nlp = spacy.load("en_core_web_sm")
 stop_words = set(stopwords.words('english'))
 
@@ -14,23 +13,31 @@ st.title("🚀 Resume Relevance Checker")
 
 # --- Helper functions ---
 def read_pdf(file):
-    """Extracts text from PDF"""
     text = ""
     with pdfplumber.open(file) as pdf:
         for page in pdf.pages:
             text += page.extract_text() or ""
     return " ".join(text.split())
 
-def extract_keywords(text, top_n=20):
-    """Extract keywords ignoring stopwords, focusing on nouns/proper nouns"""
+def extract_keywords_phrases(text, top_n=30):
     doc = nlp(text)
-    keywords = [token.text for token in doc if token.pos_ in ('NOUN','PROPN') and token.text.lower() not in stop_words]
-    return list(dict.fromkeys(keywords))[:top_n]
+    phrases = set()
+    for chunk in doc.noun_chunks:
+        phrase = chunk.text.strip()
+        # remove stopwords and short words
+        if phrase.lower() not in stop_words and len(phrase.split()) <= 5:
+            phrases.add(phrase)
+    return list(phrases)[:top_n]
+
+def clean_text(text):
+    text = text.lower()
+    text = re.sub(r'[^a-zA-Z0-9\s]', '', text)
+    return text
 
 def score_resume(keywords, resume_text):
-    """Compute score & verdict"""
-    matched = [k for k in keywords if k.lower() in resume_text.lower()]
-    missing = [k for k in keywords if k.lower() not in resume_text.lower()]
+    resume_text_clean = clean_text(resume_text)
+    matched = [k for k in keywords if clean_text(k) in resume_text_clean]
+    missing = [k for k in keywords if clean_text(k) not in resume_text_clean]
     score = round(len(matched)/max(1,len(keywords))*100,2)
 
     if score >= 75: verdict, color = "High", "green"
@@ -40,29 +47,22 @@ def score_resume(keywords, resume_text):
     return score, verdict, color, matched, missing
 
 # --- Upload JD and Resumes ---
-with st.expander("Upload Job Description (JD)"):
-    jd_file = st.file_uploader("Upload Job Description (PDF)", type=["pdf"], key="jd")
-
-with st.expander("Upload Resumes"):
-    resumes = st.file_uploader("Upload Resume PDFs", type=["pdf"], accept_multiple_files=True, key="resumes")
+jd_file = st.file_uploader("Upload Job Description (PDF)", type=["pdf"], key="jd")
+resumes = st.file_uploader("Upload Resume PDFs", type=["pdf"], accept_multiple_files=True, key="resumes")
 
 if st.button("Evaluate ▶️"):
-    if not jd_file:
-        st.error("Please upload JD first!")
-        st.stop()
-    if not resumes:
-        st.error("Please upload at least one resume!")
+    if not jd_file or not resumes:
+        st.error("Upload both JD and resumes to continue!")
         st.stop()
 
-    # --- Extract JD text & keywords ---
     jd_text = read_pdf(jd_file)
-    keywords = extract_keywords(jd_text, top_n=20)
-    st.subheader("🔑 JD Keywords for Evaluation")
+    keywords = extract_keywords_phrases(jd_text, top_n=30)
+    st.subheader("🔑 Extracted JD Keywords & Phrases")
     st.write(", ".join(keywords))
 
-    # --- JD Preview ---
+    # JD preview
     with st.expander("Preview Job Description"):
-        st.write(jd_text[:1000] + "..." if len(jd_text) > 1000 else jd_text)
+        st.write(jd_text[:1500] + "..." if len(jd_text) > 1500 else jd_text)
 
     results = []
     for r in resumes:
@@ -77,17 +77,21 @@ if st.button("Evaluate ▶️"):
             "Missing Skills": ", ".join(missing)
         })
 
-        # Show individual resume analysis
-        st.markdown(f"### 📄 {r.name}")
-        st.markdown(f"**Score:** {score}%  |  **Verdict:** <span style='color:{color}'>{verdict}</span>", unsafe_allow_html=True)
-        st.markdown(f"**Matched Skills:** {', '.join(matched) if matched else 'None'}")
-        st.markdown(f"**Missing Skills:** {', '.join(missing) if missing else 'None'}")
+        # Resume analysis panel
+        with st.expander(f"📄 {r.name} Analysis"):
+            st.markdown(f"**Score:** {score}%  |  **Verdict:** <span style='color:{color}'>{verdict}</span>", unsafe_allow_html=True)
+            st.markdown("**Matched Skills:**")
+            st.markdown(", ".join(matched) if matched else "None")
+            st.markdown("**Missing Skills:**")
+            # highlight missing skills in red
+            missing_html = ", ".join([f"<span style='color:red'>{m}</span>" for m in missing]) if missing else "None"
+            st.markdown(missing_html, unsafe_allow_html=True)
 
-    # --- Summary Table ---
+    # Summary Table
     st.subheader("📊 Summary Table")
     df = pd.DataFrame(results)
     st.dataframe(df)
 
-    # Download button
+    # Download CSV
     st.download_button("💾 Download CSV", df.to_csv(index=False).encode(), "resume_scores.csv", "text/csv")
 
